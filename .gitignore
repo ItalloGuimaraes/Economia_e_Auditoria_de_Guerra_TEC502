@@ -1,0 +1,9 @@
+# Ignorar os binários compilados localmente (se houver)
+/bin/
+
+# Ignorar o diretório de dados persistentes (Carteiras e Blockchain)
+data/
+
+# Ignorar ficheiros do VS Code ou SO
+.vscode/
+.DS_Store
