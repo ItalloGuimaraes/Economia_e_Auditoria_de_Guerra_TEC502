@@ -101,6 +101,8 @@ func main() {
 			consultarSaldoEfetivo()
 		case "6":
 			consultarLedger()
+		case "7":
+			enviarRequisicaoMaliciosa(scanner)
 		case "0":
 			fmt.Println("\n  Encerrando terminal do operador.")
 			return
@@ -122,6 +124,7 @@ func exibirMenu() {
 	fmt.Println("  │  4. Enviar múltiplas requisições     │")
 	fmt.Println("  │  5. Auditoria de Consenso Global     │")
 	fmt.Println("  │  6. Consultar Histórico (Ledger)     │")
+	fmt.Println("  │  7. Enviar requisição maliciosa      │")
 	fmt.Println("  │  0. Sair                             │")
 	fmt.Println("  └──────────────────────────────────────┘")
 }
@@ -529,4 +532,34 @@ func consultarLedger() {
 		}
 	}
 	fmt.Println("  ╚══════════════════════════════════════════════════════════════════════════╝")
+}
+
+func enviarRequisicaoMaliciosa(scanner *bufio.Scanner) {
+	fmt.Println("\n  ┌── MENU DE ATAQUES ──┐")
+	fmt.Println("  1. Adulterar Valor (Ataque de Integridade)")
+	fmt.Println("  2. Adulterar Setor (Ataque de Rota)")
+	fmt.Println("  3. Replay Attack (Enviar pacote duplicado)")
+	fmt.Print("  Opção: ")
+	scanner.Scan()
+	opcao := scanner.Text()
+
+	tx := criarTransacaoAssinada(10.0)
+	req := models.Requisicao{
+		ID:    "ATAQUE-" + strconv.Itoa(mathrand.Intn(1000)),
+		Setor: 1, Prioridade: 1, Descricao: "FRAUDE", Status: models.StatusPendente,
+		Transacao: tx,
+	}
+
+	switch opcao {
+	case "1":
+		req.Transacao.Valor = 999.0 // Fraude: muda valor
+	case "2":
+		req.Setor = 9 // Fraude: muda destino sem refazer assinatura
+	case "3":
+		// Envia o mesmo objeto duas vezes
+		enviarComFailover(req)
+	}
+
+	fmt.Println("  [!] Enviando pacote fraudulento...")
+	enviarComFailover(req)
 }

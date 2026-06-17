@@ -163,7 +163,7 @@ func (b *Broker) broadcast(msg models.MensagemDistribuida) (enviados int, removi
 
 // Iniciar inicializa as threads de background (Watchdog e Aging) e entra
 // no loop de aceitação de conexões de entrada.
-func (b *Broker) Iniciar() {
+func (b *Broker) Iniciar(seeds []string) {
 	ln, err := net.Listen("tcp", b.Porta)
 	if err != nil {
 		fmt.Printf("[ERRO] Falha ao abrir porta %s: %v\n", b.Porta, err)
@@ -174,6 +174,12 @@ func (b *Broker) Iniciar() {
 	b.processoEnvelhecimento()
 	b.processoWatchdogDrones()
 	b.processoAdocaoOrfaos()
+	go b.buscarAtualizacaoDeLedger(seeds)
+	b.processoGeradorCreditos()
+
+	if len(seeds) > 0 && b.MeuEndereco != "" {
+		go b.processoReconexao(seeds)
+	}
 
 	fmt.Printf(">>> Broker %d escutando em %s (externo: %s)...\n", b.ID, b.Porta, b.MeuEndereco)
 
@@ -999,19 +1005,27 @@ func (b *Broker) processoAdocaoOrfaos() {
 
 // CalcularSaldoEfetivo varre o histórico imutável (Blockchain) e as missões
 // ativas (ListaDistribuida) para determinar o saldo real de uma companhia,
-// blindando o sistema contra o ataque de Duplo Gasto.
+// blindando o sistema contra o ataque de Duplo Gasto e auditando subsídios.
 func (b *Broker) CalcularSaldoEfetivo(companhiaPubKey string) float64 {
 	// A cota inicial que cada nação/companhia recebe do Consórcio.
-	// Numa versão mais avançada, isso viria de uma transação "MINT" (Gênese).
-	saldo := 100.0
+	saldo := 200.0
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	// 1. DEDUÇÃO DA BLOCKCHAIN (Gastos Confirmados)
+	// 1. DEDUÇÃO E ADIÇÃO DA BLOCKCHAIN (Gastos e Subsídios Confirmados)
 	// Varre todos os blocos selados do livro-razão.
 	for _, bloco := range b.Blockchain.Cadeia {
+		// A. Verifica se é uma transação da própria companhia (Gasto)
 		if bloco.Transacao.CompanhiaPubKey == companhiaPubKey {
+			saldo -= bloco.Transacao.Valor
+		}
+
+		// B. Verifica se é uma transação de Subsídio Global (do Consórcio)
+		// Aqui adicionamos o subsídio ao saldo da companhia.
+		if bloco.Transacao.CompanhiaPubKey == "SUBSIDIO_CONSORCIO_ORMUZ" {
+			// Como o valor do subsídio foi registrado como negativo (-50.0),
+			// subtrair um negativo resulta em uma soma (saldo + 50.0).
 			saldo -= bloco.Transacao.Valor
 		}
 	}
@@ -1063,6 +1077,85 @@ func (b *Broker) ValidarAssinatura(tx models.TransacaoToken) error {
 	}
 
 	return nil
+}
+
+// processoGeradorCreditos injeta créditos periodicamente na rede.
+// Utiliza Eleição Dinâmica de Líder (Menor ID ativo) para evitar Forks na Blockchain.
+func (b *Broker) processoGeradorCreditos() {
+	ticker := time.NewTicker(120 * time.Second)
+	go func() {
+		for range ticker.C {
+			b.mu.Lock()
+
+			// =========================================================
+			// 1. ELEIÇÃO DINÂMICA DO LÍDER (BANCO CENTRAL)
+			// =========================================================
+			// Verifica quem é o nó ativo com o menor ID na malha P2P atual.
+			liderAtual := b.ID
+			for peerID := range b.Peers {
+				if peerID < liderAtual {
+					liderAtual = peerID
+				}
+			}
+
+			// Se este Broker NÃO for o líder eleito, ele aborta a geração do bloco
+			// e fica apenas aguardando receber o bloco já minerado pelo líder.
+			if b.ID != liderAtual {
+				b.mu.Unlock()
+				continue
+			}
+
+			// Se o código chegou aqui, este Broker é o Líder!
+			fmt.Printf("[ECONOMIA] Sou o Líder atual (Broker %d)! Minerando novo subsídio operacional...\n", b.ID)
+
+			// =========================================================
+			// 2. Criar Transação do Sistema (O "Consórcio" dá 50 créditos)
+			// =========================================================
+			// Nota: Em produção, você usaria uma chave privada dedicada ao "Banco Central"
+			tx := models.TransacaoToken{
+				CompanhiaPubKey: "SUBSIDIO_CONSORCIO_ORMUZ",
+				Valor:           -50.0, // Valor negativo para representar entrada de crédito
+				Timestamp:       time.Now().UnixMilli(),
+				Assinatura:      "SISTEMA_VALIDADO",
+			}
+
+			// =========================================================
+			// 3. Construir o Bloco de Subsídio
+			// =========================================================
+			tamanhoCadeia := len(b.Blockchain.Cadeia)
+			hashAnt := "0000000000000000000000000000000000000000000000000000000000000000"
+			if tamanhoCadeia > 0 {
+				hashAnt = b.Blockchain.Cadeia[tamanhoCadeia-1].HashAtual
+			}
+
+			novoBloco := models.Bloco{
+				Index:        tamanhoCadeia + 1,
+				Timestamp:    time.Now().UnixMilli(),
+				MissaoID:     fmt.Sprintf("SUBSIDIO-%d", time.Now().Unix()),
+				Transacao:    tx,
+				Laudo:        models.LaudoAuditoria{DroneID: "SYSTEM", Relatorio: "Injeção de subsídio."},
+				HashAnterior: hashAnt,
+			}
+			novoBloco.HashAtual = novoBloco.CalcularHash()
+
+			// =========================================================
+			// 4. Adicionar ao Ledger Local e salvar no disco
+			// =========================================================
+			b.Blockchain.Cadeia = append(b.Blockchain.Cadeia, novoBloco)
+			b.salvarLedgerLocal()
+			b.mu.Unlock()
+
+			// =========================================================
+			// 5. Propagar (Broadcast) o novo bloco para a malha validar
+			// =========================================================
+			go b.broadcast(models.MensagemDistribuida{
+				Tipo:      models.MsgNovoBloco,
+				SenderID:  b.ID,
+				Timestamp: time.Now().UnixMilli(),
+				Payload:   novoBloco,
+			})
+		}
+	}()
 }
 
 // processarNovoBloco recebe um bloco da malha P2P, audita a sua integridade e anexa ao Ledger.
@@ -1176,6 +1269,82 @@ func (b *Broker) responderConsultaLedger(conn net.Conn) {
 	json.NewEncoder(conn).Encode(copia)
 }
 
+// buscarAtualizacaoDeLedger conecta-se aos nós sementes/vizinhos ao iniciar
+// e verifica se eles possuem um histórico de blocos maior (mais atualizado).
+// Se sim, ele faz o download e sobrescreve o seu próprio disco para "alcançar" a rede.
+func (b *Broker) buscarAtualizacaoDeLedger(seeds []string) {
+	fmt.Println("[SYNC] Aguardando estabilização da rede P2P (Warm-up)...")
+
+	// 1. ESPERA INTELIGENTE: Tenta achar vizinhos por até 10 segundos
+	for i := 0; i < 10; i++ {
+		b.mu.Lock()
+		temPeer := len(b.Peers) > 0
+		b.mu.Unlock()
+
+		if temPeer {
+			break // Achou alguém! Pode sair da espera.
+		}
+		time.Sleep(1 * time.Second)
+	}
+
+	// 2. Dá mais 2 segundinhos de "gordura" para que todos os Handshakes e ACKs terminem
+	time.Sleep(2 * time.Second)
+
+	b.mu.Lock()
+	tamanhoLocal := len(b.Blockchain.Cadeia)
+	b.mu.Unlock()
+
+	fmt.Printf("[SYNC] Iniciando protocolo de recuperação. Tamanho local: %d blocos...\n", tamanhoLocal)
+
+	maiorCadeia := []models.Bloco{}
+	maiorTamanho := tamanhoLocal
+
+	// Interroga todos os nós vizinhos (usando a lista de seeds que já conhecemos)
+	for _, peerAddr := range seeds {
+		peerAddr = strings.TrimSpace(peerAddr)
+
+		// CORREÇÃO AQUI: b.MeuEndereco em vez de b.Endereco
+		if peerAddr == "" || peerAddr == b.MeuEndereco {
+			continue // Não pergunta a si mesmo
+		}
+
+		conn, err := net.DialTimeout("tcp", peerAddr, 2*time.Second)
+		if err != nil {
+			continue // Nó vizinho offline, ignora
+		}
+
+		// Pede a Blockchain completa para o vizinho
+		msg := models.MensagemDistribuida{
+			Tipo:      models.MsgConsultaLedger,
+			SenderID:  b.ID,
+			Timestamp: time.Now().UnixMilli(),
+		}
+		json.NewEncoder(conn).Encode(msg)
+
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		var cadeiaRecebida []models.Bloco
+		err = json.NewDecoder(conn).Decode(&cadeiaRecebida)
+		conn.Close()
+
+		// Se recebeu com sucesso e é maior que a local, guarda como a maior encontrada
+		if err == nil && len(cadeiaRecebida) > maiorTamanho {
+			maiorTamanho = len(cadeiaRecebida)
+			maiorCadeia = cadeiaRecebida
+		}
+	}
+
+	// Se encontrou uma cadeia maior na rede, atualiza o seu próprio cérebro e disco
+	if len(maiorCadeia) > tamanhoLocal {
+		b.mu.Lock()
+		b.Blockchain.Cadeia = maiorCadeia
+		b.salvarLedgerLocal() // Grava a atualização por cima do ficheiro velho no Windows/Linux
+		b.mu.Unlock()
+		fmt.Printf("[SYNC-SUCESSO] Ledger desatualizado! Fiz o download de %d novos blocos da rede.\n", len(maiorCadeia)-tamanhoLocal)
+	} else {
+		fmt.Println("[SYNC] O Ledger local já está atualizado com a malha.")
+	}
+}
+
 // =========================================================
 // Ponto de Entrada (Entrypoint Node)
 // =========================================================
@@ -1230,12 +1399,12 @@ func main() {
 	broker.carregarLedgerLocal()
 
 	// Inicialização atrasada para garantir sincronia física nos containers
-	if len(seeds) > 0 && meuEndereco != "" {
-		go broker.processoReconexao(seeds)
-		fmt.Println(">>> Aguardando estabilização da malha P2P (3s)...")
-		time.Sleep(3 * time.Second)
-	}
+	//if len(seeds) > 0 && meuEndereco != "" {
+	//	go broker.processoReconexao(seeds)
+	//	fmt.Println(">>> Aguardando estabilização da malha P2P (3s)...")
+	//	time.Sleep(3 * time.Second)
+	//}
 
 	fmt.Printf(">>> Broker %d iniciando na porta %s | externo: %s\n", broker.ID, porta, meuEndereco)
-	broker.Iniciar()
+	broker.Iniciar(seeds)
 }
