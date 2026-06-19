@@ -27,9 +27,6 @@ type Bloco struct {
 // CalcularHash gera o SHA-256 do bloco baseando-se em todo o seu conteúdo.
 // Qualquer alteração nos dados do laudo ou da transação muda o hash,
 // tornando a adulteração detectável pela cadeia.
-//
-// NOTA: HashAtual é excluído do cálculo (não faz parte do record) porque
-// ele é o próprio resultado desta função — incluí-lo seria circularidade.
 func (b *Bloco) CalcularHash() string {
 	record := fmt.Sprintf("%d%d%s%s%.2f%d%s%s%s%s",
 		b.Index, b.Timestamp, b.MissaoID,

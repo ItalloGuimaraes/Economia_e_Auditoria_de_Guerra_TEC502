@@ -15,16 +15,8 @@ type TransacaoToken struct {
 
 // GerarHashDados cria o resumo dos dados financeiros que será assinado pelo cliente
 // e posteriormente verificado pelo Broker.
-//
-// IMPORTANTE: apenas CompanhiaPubKey, Valor e Timestamp entram no hash.
-// O campo Assinatura é EXCLUÍDO deliberadamente para garantir que o hash
-// calculado no cliente (antes de assinar) seja idêntico ao calculado no broker
-// (quando Assinatura já está preenchida). Incluir Assinatura aqui causaria
-// divergência de hash e faria toda transação legítima ser rejeitada como fraude.
-func (t *TransacaoToken) GerarHashDados() []byte {
-	// %.2f fixa o float em duas casas decimais, tornando a serialização determinística
-	// independente de arredondamentos de ponto flutuante entre plataformas.
-	payload := fmt.Sprintf("%s:%.2f:%d", t.CompanhiaPubKey, t.Valor, t.Timestamp)
+func (t *TransacaoToken) GerarHashDados(setor int) []byte {
+	payload := fmt.Sprintf("%s:%.2f:%d:%d", t.CompanhiaPubKey, t.Valor, setor, t.Timestamp)
 	h := sha256.Sum256([]byte(payload))
 	return h[:]
 }

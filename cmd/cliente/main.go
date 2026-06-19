@@ -178,7 +178,7 @@ func enviarRequisicaoManual(scanner *bufio.Scanner) {
 	}
 
 	custoMissao := float64(prioridade * 5)
-	txAssinada := criarTransacaoAssinada(custoMissao)
+	txAssinada := criarTransacaoAssinada(custoMissao, setor)
 
 	req := models.Requisicao{
 		ID:         fmt.Sprintf("REQ-%d-%04d", setor, mathrand.Intn(10000)),
@@ -206,7 +206,7 @@ func enviarRequisicaoAleatoria() {
 	prioridade := mathrand.Intn(5) + 1
 	custoMissao := float64(prioridade * 5)
 
-	txAssinada := criarTransacaoAssinada(custoMissao)
+	txAssinada := criarTransacaoAssinada(custoMissao, setorGeografico)
 
 	req := models.Requisicao{
 		ID:         fmt.Sprintf("REQ-%d-%04d", setorGeografico, mathrand.Intn(10000)),
@@ -473,14 +473,15 @@ func inicializarIdentidadePersistente() {
 	fmt.Printf("\n  [SEC] Nova Carteira criada para '%s' e guardada no disco.\n  Chave Pública:\n  %s...\n", strings.ToUpper(nomeCompanhia), companhiaPubKey[:40])
 }
 
-func criarTransacaoAssinada(valor float64) models.TransacaoToken {
+func criarTransacaoAssinada(valor float64, setor int) models.TransacaoToken { // <-- ADD setor
 	tx := models.TransacaoToken{
 		CompanhiaPubKey: companhiaPubKey,
 		Valor:           valor,
 		Timestamp:       time.Now().UnixMilli(),
 	}
 
-	hash := tx.GerarHashDados()
+	hash := tx.GerarHashDados(setor) // <-- PASSA O SETOR PARA O HASH
+	// ... o resto da função continua igual ...
 	assinaturaBytes, err := ecdsa.SignASN1(rand.Reader, chavePrivada, hash)
 	if err != nil {
 		panic("Falha ao assinar transação: " + err.Error())
@@ -543,7 +544,7 @@ func enviarRequisicaoMaliciosa(scanner *bufio.Scanner) {
 	scanner.Scan()
 	opcao := scanner.Text()
 
-	tx := criarTransacaoAssinada(10.0)
+	tx := criarTransacaoAssinada(10., 1)
 	req := models.Requisicao{
 		ID:    "ATAQUE-" + strconv.Itoa(mathrand.Intn(1000)),
 		Setor: 1, Prioridade: 1, Descricao: "FRAUDE", Status: models.StatusPendente,

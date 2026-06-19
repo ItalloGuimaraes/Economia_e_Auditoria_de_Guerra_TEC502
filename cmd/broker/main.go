@@ -176,6 +176,7 @@ func (b *Broker) Iniciar(seeds []string) {
 	b.processoAdocaoOrfaos()
 	go b.buscarAtualizacaoDeLedger(seeds)
 	b.processoGeradorCreditos()
+	go b.processoPingAtivo()
 
 	if len(seeds) > 0 && b.MeuEndereco != "" {
 		go b.processoReconexao(seeds)
@@ -330,10 +331,10 @@ func (b *Broker) processarConclusaoDrone(msg models.MensagemDistribuida) {
 	// =========================================================
 	// Todos os brokers ouvem o drone relatar a conclusão, mas APENAS
 	// o broker "Sponsor" (dono da missão) tem autorização do consórcio
-	// para escrever o laudo, selar o bloco e propagar a verdade absoluta.
+	// para escrever o laudo e selar o bloco.
 	if tarefaConcluida.BrokerID != b.ID {
 		b.mu.Unlock()
-		return // Sou apenas um nó observador. Deixo a missão como concluída e espero o MsgNovoBloco.
+		return
 	}
 
 	// 2. Geração do Laudo de Auditoria Inalterável (Apenas para o Dono)
@@ -590,7 +591,7 @@ func (b *Broker) processarNovoAlerta(msg models.MensagemDistribuida) {
 	// =========================================================
 	// 1. AUDITORIA DE SEGURANÇA (CRIPTOGRAFIA)
 	// =========================================================
-	if err := b.ValidarAssinatura(req.Transacao); err != nil {
+	if err := b.ValidarAssinatura(req); err != nil {
 		fmt.Printf("[ALERTA DE SEGURANÇA] Pacote rejeitado! Motivo: %v\n", err)
 		return // Descarta o pacote fraudulento
 	}
@@ -605,7 +606,32 @@ func (b *Broker) processarNovoAlerta(msg models.MensagemDistribuida) {
 		return // Descarta pacote sem saldo
 	}
 
-	// Se passou nas duas auditorias, aceita na Mempool
+	// =========================================================
+	// 3. AUDITORIA DE REPLAY ATTACK (PREVENÇÃO DE PACOTE DUPLICADO)
+	// =========================================================
+	b.mu.Lock()
+	// Verifica se a missão já está na fila ativa (Mempool)
+	for _, r := range b.ListaDistribuida {
+		if r.ID == req.ID {
+			b.mu.Unlock()
+			fmt.Printf("[ALERTA DE SEGURANÇA] Pacote rejeitado! Motivo: REPLAY ATTACK (A Missão %s já existe na rede)\n", req.ID)
+			return // Descarta a duplicata instantaneamente
+		}
+	}
+
+	// Verifica se a missão já foi concluída e está cravada na Blockchain
+	for _, bloco := range b.Blockchain.Cadeia {
+		if bloco.MissaoID == req.ID {
+			b.mu.Unlock()
+			fmt.Printf("[ALERTA DE SEGURANÇA] Pacote rejeitado! Motivo: REPLAY ATTACK (A Missão %s já foi executada no Bloco #%d)\n", req.ID, bloco.Index)
+			return // Descarta a duplicata instantaneamente
+		}
+	}
+	b.mu.Unlock()
+
+	// =========================================================
+	// Se passou em todas as auditorias, aceita o pacote
+	// =========================================================
 	b.mu.Lock()
 	origemLocal := msg.Timestamp == 0
 	if origemLocal {
@@ -963,14 +989,10 @@ func (b *Broker) processoAdocaoOrfaos() {
 			for i := range b.ListaDistribuida {
 				req := &b.ListaDistribuida[i]
 
-				// Se a missão é de OUTRO broker e está pendente...
 				if req.Status == models.StatusPendente && req.BrokerID != b.ID {
 					_, donoVivo := b.Peers[req.BrokerID]
 
-					// ...e o dono dela não está mais ativo na nossa lista de Peers
 					if !donoVivo {
-						// LÓGICA DE DESEMPATE: Quem herda a missão?
-						// Resposta: O nó sobrevivente com o menor ID.
 						menorIdSobrevivente := b.ID
 						for peerID := range b.Peers {
 							if peerID < menorIdSobrevivente {
@@ -978,10 +1000,9 @@ func (b *Broker) processoAdocaoOrfaos() {
 							}
 						}
 
-						// Se eu sou o nó sobrevivente com o menor ID, eu adoto a missão.
 						if b.ID == menorIdSobrevivente {
 							fmt.Printf("[FAILOVER] Broker %d caiu! Adotando missão %s...\n", req.BrokerID, req.ID)
-							req.BrokerID = b.ID // Eu assumo a autoria
+							req.BrokerID = b.ID
 
 							adotadas = append(adotadas, models.MensagemDistribuida{
 								Tipo:      models.MsgSyncUpdate,
@@ -995,7 +1016,6 @@ func (b *Broker) processoAdocaoOrfaos() {
 			}
 			b.mu.Unlock()
 
-			// Faz o broadcast das missões que foram sequestradas para a malha atualizar
 			for _, msg := range adotadas {
 				go b.broadcast(msg)
 			}
@@ -1043,37 +1063,32 @@ func (b *Broker) CalcularSaldoEfetivo(companhiaPubKey string) float64 {
 }
 
 // ValidarAssinatura reconstrói a chave pública e verifica o selo ECDSA
-func (b *Broker) ValidarAssinatura(tx models.TransacaoToken) error {
-	// 1. Descodificar a Chave Pública de Hex para Bytes
-	pubKeyBytes, err := hex.DecodeString(tx.CompanhiaPubKey)
+func (b *Broker) ValidarAssinatura(req models.Requisicao) error {
+	// 1. Descodificar a Chave Pública
+	pubKeyBytes, err := hex.DecodeString(req.Transacao.CompanhiaPubKey)
 	if err != nil {
 		return errors.New("formato de chave pública inválido")
 	}
 
-	// 2. Reconstruir a estrutura ecdsa.PublicKey
 	x, y := elliptic.Unmarshal(elliptic.P256(), pubKeyBytes)
 	if x == nil {
-		return errors.New("chave pública corrompida ou inválida")
+		return errors.New("chave pública corrompida")
 	}
-	pubKey := &ecdsa.PublicKey{
-		Curve: elliptic.P256(),
-		X:     x,
-		Y:     y,
-	}
+	pubKey := &ecdsa.PublicKey{Curve: elliptic.P256(), X: x, Y: y}
 
-	// 3. Descodificar a Assinatura de Hex para Bytes
-	assinaturaBytes, err := hex.DecodeString(tx.Assinatura)
+	// 2. Descodificar a Assinatura
+	assinaturaBytes, err := hex.DecodeString(req.Transacao.Assinatura)
 	if err != nil {
 		return errors.New("formato de assinatura inválido")
 	}
 
-	// 4. Regenerar o Hash original dos dados
-	hash := tx.GerarHashDados()
+	// 3. REGERAR O HASH ORIGINAL CRUZANDO O SETOR INFORMADO NA ROTA
+	hash := req.Transacao.GerarHashDados(req.Setor)
 
-	// 5. O Teste Criptográfico Final
+	// 4. O Teste Criptográfico Final
 	valido := ecdsa.VerifyASN1(pubKey, hash, assinaturaBytes)
 	if !valido {
-		return errors.New("VERIFICAÇÃO FALHOU: Transação forjada ou adulterada em trânsito")
+		return errors.New("VERIFICAÇÃO FALHOU: Transação forjada ou Rota adulterada em trânsito")
 	}
 
 	return nil
@@ -1346,6 +1361,48 @@ func (b *Broker) buscarAtualizacaoDeLedger(seeds []string) {
 }
 
 // =========================================================
+// Monitoramento Ativo (Health Checks)
+// =========================================================
+
+// processoPingAtivo varre a malha periodicamente para detetar quedas silenciosas.
+// Evita que o sistema fique refém de nós "fantasmas" na Eleição de Líder ou Adoção de Órfãos.
+func (b *Broker) processoPingAtivo() {
+	ticker := time.NewTicker(5 * time.Second)
+	go func() {
+		for range ticker.C {
+			b.mu.Lock()
+			// Faz uma cópia rápida da lista de Peers para não bloquear o Broker
+			candidatos := make(map[int]string)
+			for id, addr := range b.Peers {
+				candidatos[id] = addr
+			}
+			b.mu.Unlock()
+
+			// Testa a conexão (Ping) com cada vizinho
+			for peerID, addr := range candidatos {
+				conn, err := net.DialTimeout("tcp", addr, 1*time.Second)
+
+				b.mu.Lock()
+				if err != nil {
+					// O vizinho não atendeu! Incrementa a falha.
+					b.FalhasConsecutivas[peerID]++
+					if b.FalhasConsecutivas[peerID] >= limiteFalhas {
+						delete(b.Peers, peerID)
+						delete(b.FalhasConsecutivas, peerID)
+						fmt.Printf("[P2P] Peer %d removido via Ping Ativo (Morte silenciosa detetada)\n", peerID)
+					}
+				} else {
+					// O vizinho está vivo. Zera as falhas.
+					conn.Close()
+					b.FalhasConsecutivas[peerID] = 0
+				}
+				b.mu.Unlock()
+			}
+		}
+	}()
+}
+
+// =========================================================
 // Ponto de Entrada (Entrypoint Node)
 // =========================================================
 
@@ -1397,13 +1454,6 @@ func main() {
 
 	// CARREGA A MEMÓRIA DO DISCO ANTES DE INICIAR
 	broker.carregarLedgerLocal()
-
-	// Inicialização atrasada para garantir sincronia física nos containers
-	//if len(seeds) > 0 && meuEndereco != "" {
-	//	go broker.processoReconexao(seeds)
-	//	fmt.Println(">>> Aguardando estabilização da malha P2P (3s)...")
-	//	time.Sleep(3 * time.Second)
-	//}
 
 	fmt.Printf(">>> Broker %d iniciando na porta %s | externo: %s\n", broker.ID, porta, meuEndereco)
 	broker.Iniciar(seeds)
