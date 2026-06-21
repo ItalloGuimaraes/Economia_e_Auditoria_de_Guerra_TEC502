@@ -290,6 +290,26 @@ docker compose run --rm --build testes
 
 ---
 
+## 📚 Referências e Links Úteis
+
+**Golang & Infraestrutura Nativa**
+* [Documentação Oficial do Go (Golang)](https://go.dev/doc/) — Base conceitual para o uso de *Goroutines*, canais e concorrência segura na malha.
+* [Pacote `net` do Go](https://pkg.go.dev/net) — Implementação de Sockets TCP puros, `DialTimeout` e controle de *Deadlines* para a comunicação assíncrona da topologia P2P.
+* [Pacote `encoding/json` do Go](https://pkg.go.dev/encoding/json) — Utilizado para a serialização e desserialização do envelope de transporte padrão (`MensagemDistribuida`).
+* [Go by Example: Mutexes](https://gobyexample.com/mutexes) — Referência prática para implementação de *Thread-Safety* e prevenção de *Race Conditions* na alteração do estado global da *Mempool*.
+
+**Algoritmos Distribuídos e Consenso**
+* [Distributed Systems: Principles and Paradigms (Tanenbaum & Van Steen)](https://www.distributed-systems.net/index.php/books/ds3/) — Obra clássica e referência acadêmica principal para os conceitos de Tolerância a Falhas Bizantinas (BFT), exclusão mútua e arquiteturas *Peer-to-Peer* abordados no projeto.
+* [Time, Clocks, and the Ordering of Events in a Distributed System (Leslie Lamport)](https://lamport.azurewebsites.net/pubs/time-clocks.pdf) — Artigo seminal que embasa a ordenação causal (Relógios Lógicos de Lamport) das missões na fila do sistema.
+* [Ricart-Agrawala Algorithm (Wikipedia)](https://en.wikipedia.org/wiki/Ricart%E2%80%93Agrawala_algorithm) — Visão formal do algoritmo de exclusão mútua totalmente distribuído, adotado e otimizado para decidir qual broker possui o direito de despachar um drone.
+
+**Segurança Criptográfica e Blockchain**
+* [Pacote `crypto/ecdsa` do Go](https://pkg.go.dev/crypto/ecdsa) — Base da camada *Zero Trust*. Implementação da Curva Elíptica P-256 para geração de pares de chaves criptográficas (`.pem`) e assinaturas digitais.
+* [Pacote `crypto/sha256` do Go](https://pkg.go.dev/crypto/sha256) — Função matemática de dispersão (*Hash*) utilizada para o encadeamento inquebrável dos blocos e auditoria de integridade do *Ledger*.
+* [Replay Attack Mitigation (GeeksforGeeks)](https://www.geeksforgeeks.org/what-is-a-replay-attack/) — Embasamento teórico para a construção da defesa contra a injeção repetida de transações financeiras.
+
+---
+
 ## 👨‍💻 Autor
 
 Desenvolvido por **Ítallo de Santana Guimarães**  
